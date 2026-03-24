@@ -90,4 +90,4 @@ if os.path.exists("/content/TeleGo/my_bot.session"):
     
 print("\rStarting Bot....")
 
-!cd /content/Telegram-Leecher/ && python3 -m colab_leecher #type:ignore
+!cd /content/TeleGo/ && python3 -m colab_leecher #type:ignore
