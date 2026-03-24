@@ -65,11 +65,11 @@ if len(str(DUMP_ID)) == 10 and "-100" not in str(DUMP_ID):
 if os.path.exists("/content/sample_data"):
     shutil.rmtree("/content/sample_data")
 
-cmd = "git clone https://github.com/XronTrix10/Telegram-Leecher"
+cmd = "git clone https://github.com/ianntk/TeleGo"
 proc = subprocess.run(cmd, shell=True)
 cmd = "apt update && apt install ffmpeg aria2"
 proc = subprocess.run(cmd, shell=True)
-cmd = "pip3 install -r /content/Telegram-Leecher/requirements.txt"
+cmd = "pip3 install -r /content/TeleGo/requirements.txt"
 proc = subprocess.run(cmd, shell=True)
 
 credentials = {
@@ -80,13 +80,13 @@ credentials = {
     "DUMP_ID": DUMP_ID,
 }
 
-with open('/content/Telegram-Leecher/credentials.json', 'w') as file:
+with open('/content/TeleGo/credentials.json', 'w') as file:
     file.write(json.dumps(credentials))
 
 Working = False
 
-if os.path.exists("/content/Telegram-Leecher/my_bot.session"):
-    os.remove("/content/Telegram-Leecher/my_bot.session") # Remove previous bot session
+if os.path.exists("/content/TeleGo/my_bot.session"):
+    os.remove("/content/TeleGo/my_bot.session") # Remove previous bot session
     
 print("\rStarting Bot....")
 
