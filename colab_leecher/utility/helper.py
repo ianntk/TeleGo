@@ -402,9 +402,9 @@ async def status_bar(down_msg, speed, percentage, eta, done, left, engine):
                 reply_markup=keyboard(),
             )
     except BadRequest as e:
-        logging.error(f"Same Status Not Modified: {str(e)}")
+        if "MESSAGE_NOT_MODIFIED" not in str(e):
+            logging.error(f"Status bar BadRequest: {str(e)}")
     except Exception as e:
-        # Catch any exceptions that might occur while editing the message.
         logging.error(f"Error Updating Status bar: {str(e)}")
 
 

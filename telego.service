@@ -1,0 +1,31 @@
+[Unit]
+Description=TeleGo Telegram Leecher Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ── Set this to whatever user runs the bot ───────────────────────────────────
+User=ubuntu
+
+# ── Working directory (same as BOT_BASE_PATH) ───────────────────────────────
+WorkingDirectory=/opt/telego
+
+# ── Credentials — edit these or load from /etc/telego/env ───────────────────
+EnvironmentFile=/etc/telego/env
+
+# ── Start command ────────────────────────────────────────────────────────────
+ExecStart=/usr/bin/python3 -m colab_leecher
+
+# ── Auto-restart on crash ────────────────────────────────────────────────────
+Restart=always
+RestartSec=10
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telego
+
+[Install]
+WantedBy=multi-user.target

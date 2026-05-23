@@ -1,34 +1,49 @@
 # copyright 2023 © Xron Trix | https://github.com/Xrontrix10
-# Torrent / Magnet support — added by editor
+# Torrent / Magnet support — RPC polling mode
 
 import re
 import logging
+import asyncio
+import aiohttp
 import subprocess
 from urllib.parse import urlparse, parse_qs, unquote_plus
 from datetime import datetime
 from colab_leecher.utility.helper import sizeUnit, status_bar
 from colab_leecher.utility.variables import BOT, Aria2c, Paths, Messages, BotTimes
 
+RPC_PORT   = 6801          # separate port so it doesn't clash with anything
+RPC_SECRET = "tg_bot_rpc"
+RPC_URL    = f"http://127.0.0.1:{RPC_PORT}/jsonrpc"
+TOKEN      = f"token:{RPC_SECRET}"
+
 
 def get_Torrent_Name(link: str) -> str:
-    """Extract a human-readable name from a magnet link or return a placeholder."""
-    if len(BOT.Options.custom_name) != 0:
+    if BOT.Options.custom_name:
         return BOT.Options.custom_name
-
     if link.startswith("magnet:"):
         try:
-            params = parse_qs(urlparse(link).query)
-            dn = params.get("dn", [""])[0]
+            dn = parse_qs(urlparse(link).query).get("dn", [""])[0]
             if dn:
                 return unquote_plus(dn)
         except Exception:
             pass
-        # Fallback: use the first 8 chars of the info-hash
-        btih = re.search(r"btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})", link, re.I)
-        if btih:
-            return f"Torrent_{btih.group(1)[:8].upper()}"
-
+        m = re.search(r"btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})", link, re.I)
+        if m:
+            return f"Torrent_{m.group(1)[:8].upper()}"
     return "Torrent Download"
+
+
+async def _rpc(session: aiohttp.ClientSession, method: str, params: list):
+    try:
+        async with session.post(
+            RPC_URL,
+            json={"jsonrpc": "2.0", "id": "bot", "method": method, "params": params},
+            timeout=aiohttp.ClientTimeout(total=5),
+        ) as r:
+            data = await r.json()
+            return data.get("result")
+    except Exception:
+        return None
 
 
 async def torrent_Download(link: str, num: int):
@@ -41,133 +56,137 @@ async def torrent_Download(link: str, num: int):
         f"<b>🏷️ Name » </b><code>{name_d}</code>\n"
     )
 
-    command = [
+    # ── 1. Start aria2c daemon ───────────────────────────────────────────────
+    daemon_cmd = [
         "aria2c",
-        "-x16",
-        "--seed-time=0",
-        "--seed-ratio=0.0",
+        "--enable-rpc=true",
+        f"--rpc-listen-port={RPC_PORT}",
+        f"--rpc-secret={RPC_SECRET}",
+        "--rpc-allow-origin-all=true",
         "--enable-dht=true",
         "--dht-listen-port=6881",
         "--enable-peer-exchange=true",
         "--bt-save-metadata=true",
         "--bt-detach-seed-only=true",
-        "--follow-torrent=mem",         # keep .torrent in memory, don't save it
-        "--summary-interval=1",
-        "--max-tries=3",
-        "--console-log-level=notice",
-        "-d", Paths.down_path,
-        link,
+        "--seed-ratio=0.0",
+        "--seed-time=0",
+        "--max-connection-per-server=16",
+        "--split=16",
+        "--console-log-level=error",
+        f"--dir={Paths.down_path}",
     ]
-
-    proc = subprocess.Popen(
-        command, bufsize=0, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    daemon = await asyncio.create_subprocess_exec(
+        *daemon_cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
     )
 
-    Aria2c.link_info = False
-
-    while True:
-        output = proc.stdout.readline()
-        if output == b"" and proc.poll() is not None:
-            break
-        if output:
-            await on_torrent_output(output.decode("utf-8", errors="replace"))
-
-    exit_code = proc.wait()
-    if exit_code != 0:
-        error_output = proc.stderr.read().decode("utf-8", errors="replace")
-        logging.error(
-            f"aria2c torrent failed (code {exit_code}) for: {link}\n{error_output}"
-        )
-
-
-async def on_torrent_output(output: str):
-    """
-    Parse aria2c's --summary-interval=1 progress lines for BitTorrent downloads.
-
-    Progress line format:
-        [#abc123 100MiB/500MiB(20%) CN:5 DL:1.0MiB ETA:7m10s]
-    Metadata phase:
-        [#abc123 (METADATA) CN:5 DL:2KiB]
-    """
-    # --- Metadata phase: no total size known yet ---
-    if "(METADATA)" in output:
-        Aria2c.link_info = False
-        await status_bar(
-            Messages.status_head,
-            "Fetching...",
-            0.0,
-            "N/A",
-            "0B",
-            "Fetching Metadata",
-            "Aria2c BT 🧲",
-        )
-        return
-
-    if "ETA:" not in output:
-        return
-
-    total_size = ""
-    progress_percentage = "0"
-    downloaded_bytes = "0B"
-    eta = "N/A"
-
     try:
-        parts = output.split()
+        async with aiohttp.ClientSession() as session:
+            # ── 2. Wait for RPC to be ready ──────────────────────────────
+            for _ in range(40):
+                if await _rpc(session, "aria2.getVersion", [TOKEN]):
+                    break
+                await asyncio.sleep(0.25)
+            else:
+                logging.error("aria2c RPC did not start in time")
+                return
 
-        # Find the size/progress token — looks like "100MiB/500MiB(20%)"
-        size_token = next(
-            (p for p in parts if "/" in p and "(" in p and ")" in p), None
-        )
-        if size_token:
-            downloaded_bytes = size_token.split("/")[0]
-            right = size_token.split("/")[1]
-            total_size = right.split("(")[0]
-            pct_str = right[right.find("(") + 1 : right.find(")")]
-            pct_nums = re.findall(r"[\d.]+", pct_str)
-            progress_percentage = pct_nums[0] if pct_nums else "0"
+            # ── 3. Add the torrent ───────────────────────────────────────
+            inp = link.strip()
+            if inp.startswith("http") and inp.endswith(".torrent"):
+                import base64
+                async with session.get(inp) as resp:
+                    b64 = base64.b64encode(await resp.read()).decode()
+                gid = await _rpc(session, "aria2.addTorrent", [TOKEN, b64])
+            else:
+                gid = await _rpc(session, "aria2.addUri", [TOKEN, [inp]])
 
-        # Find ETA token — "ETA:7m10s]" or "ETA:--]"
-        eta_token = next((p for p in parts if p.upper().startswith("ETA:")), None)
-        if eta_token:
-            eta = eta_token.split(":", 1)[1].rstrip("]").strip()
+            if not gid:
+                logging.error("Failed to add torrent to aria2c")
+                return
 
-    except Exception as e:
-        logging.error(f"Torrent progress parse error: {e}")
-        return
+            logging.info(f"Torrent GID: {gid}")
+            Aria2c.link_info = False
+            stall = 0
 
-    if not total_size:
-        return
+            # ── 4. Poll loop — fully async, never blocks the event loop ──
+            while True:
+                await asyncio.sleep(1)
 
-    # Calculate approximate speed from elapsed time + downloaded bytes
-    elapsed = max((datetime.now() - BotTimes.task_start).seconds, 1)
+                info = await _rpc(session, "aria2.tellStatus", [TOKEN, gid])
+                if not info:
+                    continue
 
-    if elapsed >= 270 and not Aria2c.link_info:
-        logging.warning("No torrent download progress after 4.5 min — possibly no seeders.")
+                status    = info.get("status", "")
+                completed = int(info.get("completedLength", 0))
+                total     = int(info.get("totalLength", 0))
+                speed_dl  = int(info.get("downloadSpeed", 0))
+                speed_ul  = int(info.get("uploadSpeed", 0))
+                peers     = int(info.get("numSeeders", 0))
+                files     = info.get("files", [])
+                fname     = (files[0].get("path", "") if files else "") or name_d
+                fname     = fname.split("/")[-1] or name_d
 
-    down_nums = re.findall(r"[\d.]+", downloaded_bytes)
-    down_units = re.findall(r"[a-zA-Z]+", downloaded_bytes)
+                # Update display name once we have it
+                if fname and fname != name_d:
+                    Messages.status_head = (
+                        f"<b>🧲 DOWNLOADING TORRENT » </b><i>Link {str(num).zfill(2)}</i>\n\n"
+                        f"<b>🏷️ Name » </b><code>{fname}</code>\n"
+                    )
 
-    if down_nums and down_units:
-        unit_char = down_units[0][0].upper()
-        multiplier = {"G": 3, "M": 2, "K": 1}.get(unit_char, 0)
-        bytes_done = float(down_nums[0]) * (1024 ** multiplier)
-        current_speed = bytes_done / elapsed
-        speed_string = f"{sizeUnit(current_speed)}/s"
-        Aria2c.link_info = True
-    else:
-        speed_string = "N/A"
+                if status == "complete":
+                    break
+                if status == "error":
+                    err = info.get("errorMessage", "unknown")
+                    logging.error(f"Torrent error: {err}")
+                    break
 
-    try:
-        percentage = float(progress_percentage)
-    except ValueError:
-        percentage = 0.0
+                # Stall detection
+                if speed_dl == 0 and total == 0:
+                    stall += 1
+                    if stall >= 120:
+                        logging.warning("No torrent progress for 2 min — no seeders?")
+                        break
+                else:
+                    stall = 0
+                    Aria2c.link_info = True
 
-    await status_bar(
-        Messages.status_head,
-        speed_string,
-        percentage,
-        eta,
-        downloaded_bytes,
-        total_size,
-        "Aria2c BT 🧲",
-    )
+                pct = (completed / total * 100) if total else 0.0
+                eta = int((total - completed) / speed_dl) if speed_dl else 0
+                eta_str = (
+                    f"{eta//3600:02d}h{(eta%3600)//60:02d}m"
+                    if eta >= 3600
+                    else f"{eta//60:02d}m{eta%60:02d}s"
+                    if eta
+                    else "N/A"
+                )
+                phase = "Metadata" if total == 0 else f"{sizeUnit(completed)}/{sizeUnit(total)}"
+                spd_str = f"{sizeUnit(speed_dl)}/s ⬇  {sizeUnit(speed_ul)}/s ⬆  👥{peers}"
+
+                await status_bar(
+                    Messages.status_head,
+                    spd_str,
+                    pct,
+                    eta_str,
+                    phase,
+                    sizeUnit(total) if total else "?",
+                    "Aria2c BT 🧲",
+                )
+
+            # ── 5. Shutdown RPC daemon ───────────────────────────────────
+            await _rpc(session, "aria2.shutdown", [TOKEN])
+
+    except asyncio.CancelledError:
+        # Cancel button pressed — shut down aria2c and re-raise
+        try:
+            async with aiohttp.ClientSession() as s:
+                await _rpc(s, "aria2.forceShutdown", [TOKEN])
+        except Exception:
+            pass
+        raise
+    finally:
+        await asyncio.sleep(0.5)
+        if daemon.returncode is None:
+            daemon.kill()
+        await daemon.wait()

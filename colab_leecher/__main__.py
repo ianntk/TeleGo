@@ -1,7 +1,7 @@
 # copyright 2024 © Xron Trix | https://github.com/Xrontrix10
 
 
-import logging, os
+import logging, os, asyncio
 from pyrogram import filters
 from datetime import datetime
 from asyncio import sleep, get_event_loop
@@ -198,7 +198,10 @@ async def handle_options(client, callback_query):
         BotTimes.start_time = datetime.now()
         event_loop = get_event_loop()
         BOT.TASK = event_loop.create_task(taskScheduler())  # type: ignore
-        await BOT.TASK
+        try:
+            await BOT.TASK
+        except asyncio.CancelledError:
+            pass  # Normal user cancellation — bot keeps running
         BOT.State.task_going = False
 
     elif callback_query.data == "video":
@@ -367,7 +370,10 @@ async def handle_options(client, callback_query):
         BotTimes.start_time = datetime.now()
         event_loop = get_event_loop()
         BOT.TASK = event_loop.create_task(taskScheduler())  # type: ignore
-        await BOT.TASK
+        try:
+            await BOT.TASK
+        except asyncio.CancelledError:
+            pass  # Normal user cancellation — bot keeps running
         BOT.State.task_going = False
 
     # If user Wants to Stop The Task
@@ -475,4 +481,8 @@ async def help_command(client, message):
 
 
 logging.info("Colab Leecher Started !")
-colab_bot.run()
+try:
+    colab_bot.run()
+except Exception as e:
+    logging.critical(f"Bot crashed: {e}", exc_info=True)
+    raise
